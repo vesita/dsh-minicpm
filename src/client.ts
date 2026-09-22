@@ -6,8 +6,22 @@
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
     const React = require('react')
-    const { Button } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { Button } = primitives
     const h = React.createElement
+
+    /**
+     * The profile entry id this package's Config lives under — the `id:` the
+     * profile patch declares (`cordis.patch.yml` → `id: minicpm`), which is also
+     * the namespace `configForms` addresses.
+     *
+     * Not to be confused with the historical `llm-minicpm` provider-settings
+     * namespace: that one addresses the directory row in Settings → Models, and
+     * it too is now the entry id (the host half reads it off its own fiber).
+     */
+    const CONFIG_NS = 'minicpm'
+    /** The bundle package name the Plugins page keys this card by. */
+    const BUNDLE_KEY = 'dsh-minicpm'
 
     /**
      * Browser half of `dsh-minicpm`: the management card inside
@@ -583,16 +597,177 @@
       )
     }
 
-    const inject = ['slots']
+    /**
+     * The card's key must equal the provider row's `settingsNs`, which is the
+     * profile **entry id** (`minicpm`) — the settings page dispatches this slot
+     * with `{ entryKey: row.entry.settingsNs }`, so any other value renders
+     * nothing at all.
+     */
+    const inject = ['slots', 'configForms']
 
     function apply(ctx: any) {
       ctx.slots.inject('settings.models.provider-card', () =>
         ctx.slots.register(
           {
             name: 'settings.models.provider-card',
-            key: 'llm-minicpm'
+            key: 'minicpm'
           },
           MiniCPMCard
+        )
+      )
+      mountConfigCard(ctx)
+    }
+
+    /**
+     * The Plugins-page configuration card for this package.
+     *
+     * DSH 0.1.7 replaced the old `settingsScope` service with `configForms` (the
+     * browser-side controller for the active profile's plugin configuration). A
+     * form renders only for a package whose profile entry carries a `config`
+     * block, which is what the page's `ledger.bundles` collects.
+     *
+     * Only **flat scalars** can be edited: `SettingsFormModel` reads
+     * `value?.[field]` and writes `path: [field]`, so a nested name like
+     * `engine.port` would address a literal top-level key of that name. That is
+     * why the Host schema exposes `enginePort` / `engineHost` / … alongside the
+     * nested `engine` object.
+     */
+    function mountConfigCard(ctx: any) {
+      const forms = ctx && ctx.configForms
+      if (forms === undefined || forms === null || typeof forms.get !== 'function') return
+      const scope = forms.get(CONFIG_NS)
+      if (scope === undefined || scope === null) return
+
+      /** A boolean rendered as a two-state text field (no boolean helper ships). */
+      const booleanField = (field: string) => ({
+        field,
+        format: (value: any) => (value === true ? 'on' : 'off'),
+        parse: (text: string) => ({ kind: 'set', value: String(text).trim() === 'on' })
+      })
+      /** A text field that keeps an empty draft as an explicit clear. */
+      const textField = (field: string) => ({
+        field,
+        format: (value: any) => (typeof value === 'string' ? value : ''),
+        parse: (text: string) => {
+          const trimmed = String(text).trim()
+          return trimmed === '' ? { kind: 'clear' } : { kind: 'set', value: trimmed }
+        }
+      })
+      /** A whole-number field; an empty draft clears it. */
+      const numberField = (field: string) => ({
+        field,
+        format: (value: any) => (typeof value === 'number' ? String(value) : ''),
+        parse: (text: string) => {
+          const trimmed = String(text).trim()
+          if (trimmed === '') return { kind: 'clear' }
+          const parsed = Number(trimmed)
+          return Number.isFinite(parsed) ? { kind: 'set', value: parsed } : undefined
+        }
+      })
+      /** A two-choice enum field, travelling as text. */
+      const choiceField = (field: string, allowed: string[], fallback: string) => ({
+        field,
+        format: (value: any) => (allowed.indexOf(value) >= 0 ? value : ''),
+        parse: (text: string) => {
+          const trimmed = String(text).trim()
+          if (trimmed === '') return { kind: 'clear' }
+          return { kind: 'set', value: allowed.indexOf(trimmed) >= 0 ? trimmed : fallback }
+        }
+      })
+
+      const ENGINE_FIELDS: Array<[string, string, string]> = [
+        ['engineMode', '引擎模式', 'managed 由本插件托管 llama.cpp 进程；external 连接一个你自己起的端口。'],
+        ['engineHost', '监听地址', '托管模式下引擎绑定的网卡地址。'],
+        ['enginePort', '端口', '托管模式下引擎监听的端口，默认 8081。'],
+        ['engineBinary', 'llama.cpp 可执行文件', '留空则用自动下载/检测到的那个。'],
+        ['engineBaseURL', '外部引擎地址', 'external 模式下要连的基址，例如 http://127.0.0.1:8081。'],
+        ['engineContextSize', '上下文长度', '每次请求分配的上下文窗口，默认 32768。'],
+        ['engineGpuLayers', 'GPU 层数', '卸载到 GPU 的层数；999 表示尽量全部。'],
+        ['engineThreads', '线程数', 'CPU 线程数；0 表示交给引擎自己决定。'],
+        ['engineIdleUnloadSeconds', '空闲卸载秒数', '闲置这么久后释放引擎，0 表示一直保留。'],
+        ['fetchHfEndpoint', '模型下载源', 'Hugging Face 基址；换成镜像可以避开公共 CDN。'],
+        ['fetchBuild', 'llama.cpp 版本', '固定一个构建号，例如 b10951；留空表示取最新。']
+      ]
+
+      const formModel = new (primitives.SettingsFormModel)(scope, [
+        choiceField('engineMode', ['managed', 'external'], 'managed'),
+        textField('engineHost'),
+        numberField('enginePort'),
+        textField('engineBinary'),
+        textField('engineBaseURL'),
+        numberField('engineContextSize'),
+        numberField('engineGpuLayers'),
+        numberField('engineThreads'),
+        numberField('engineIdleUnloadSeconds'),
+        booleanField('enginePreserveReasoning'),
+        textField('fetchHfEndpoint'),
+        textField('fetchBuild')
+      ])
+      ctx.effect(() => () => formModel.dispose())
+
+      const formLabels = {
+        unavailable: '本部署没有提供这项配置。',
+        readOnly: '本部署的配置为只读，无法在此修改。',
+        save: '保存',
+        saving: '保存中…',
+        saveFailed: '保存失败，改动未生效。'
+      }
+
+      const formStore = formModel.bind(() => {
+        const projection: any = { shell: formModel.shell() }
+        for (const [field] of ENGINE_FIELDS) projection[field] = formModel.field(field)
+        projection.enginePreserveReasoning = formModel.field('enginePreserveReasoning')
+        return projection
+      })
+      ctx.effect(() => () => formStore.dispose())
+
+      function MiniCPMConfigCard(props: any) {
+        const state = props.useMinicpmConfig((snapshot: any) => snapshot)
+        const children = ENGINE_FIELDS.map(([field, label, hint]) => {
+          const node = state[field]
+          return h(primitives.SettingsValueField, {
+            key: field,
+            id: field,
+            label,
+            hint,
+            text: node.text,
+            overridden: node.overridden,
+            invalid: node.invalid,
+            numeric: field.indexOf('engine') === 0 && field !== 'engineMode' && field !== 'engineHost'
+              && field !== 'engineBinary' && field !== 'engineBaseURL',
+            onEdit: (text: string) => props.edit(field, text),
+            onReset: () => props.resetField(field)
+          })
+        })
+        const preserve = state.enginePreserveReasoning
+        children.push(
+          h(primitives.SettingsValueField, {
+            key: 'enginePreserveReasoning',
+            id: 'enginePreserveReasoning',
+            label: '保留思考过程',
+            hint: 'on 时把模型的 reasoning 一起留在回复里。',
+            text: preserve.text,
+            overridden: preserve.overridden,
+            invalid: preserve.invalid,
+            onEdit: (text: string) => props.edit('enginePreserveReasoning', text),
+            onReset: () => props.resetField('enginePreserveReasoning')
+          })
+        )
+        return h(
+          primitives.SettingsForm,
+          { labels: formLabels, state: state.shell, onSave: props.save, onDiscard: props.discard },
+          children
+        )
+      }
+
+      ctx.slots.inject('plugins.bundle.config', () =>
+        ctx.slots.register(
+          {
+            name: 'plugins.bundle.config',
+            key: BUNDLE_KEY,
+            inject: () => Object.assign({ hooks: { minicpmConfig: formStore } }, formModel.actions())
+          },
+          MiniCPMConfigCard
         )
       )
     }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-minicpm",
-  "version": "0.1.0",
-  "description": "适用于 DeepSeek Harness 的 MiniCPM5-2B 本地推理提供商插件（原生 LlmAdapter + llama.cpp 引擎生命周期托管 + 设置页管理卡片）",
+  "version": "0.1.1",
+  "description": "DSH 插件：MiniCPM5-2B 本地推理提供商 —— 原生模型接入，由插件托管 llama.cpp 引擎的下载、启动与卸载",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -37,7 +37,7 @@
     "test:types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

@@ -1,3 +1,25 @@
+# dsh-minicpm 的加载点。
+#
+# `config` 块是**必需的**，不是可选的样式：DSH 0.1.7 起「插件」页只为**条目上带
+# config 的插件**渲染配置区（页面的 `ledger.bundles` 收集注册了
+# `plugins.bundle.config` 槽的包，而条目没有 config 时那份布景压根不存在）。
+#
+# 这些字段在 Host 半边的 Config 里都是 `.volatile()`：改一个字段不需要重载插件，
+# Loader 把新值提交进那个稳定引用再发 `loader/volatile-update`，插件在那里比较引擎
+# 指纹 —— 端口/上下文/二进制/模式真的变了才停掉正在跑的引擎。
+#
+# 它们与嵌套的 `engine` / `fetch` 是同一件事的两种写法：老配置写嵌套那份，
+# 「插件」页的表单只能写顶层平铺这份，两者都有默认值，谁被改过谁生效。
 - insert:
     - id: minicpm
       name: 'dsh-minicpm'
+      config:
+        engineMode: managed
+        engineHost: 127.0.0.1
+        enginePort: 8081
+        engineContextSize: 32768
+        engineGpuLayers: 999
+        engineThreads: 0
+        engineIdleUnloadSeconds: 900
+        enginePreserveReasoning: true
+        fetchHfEndpoint: https://huggingface.co

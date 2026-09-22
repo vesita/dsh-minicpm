@@ -32,8 +32,18 @@ import { engineDir, modelsDir } from './paths.js'
 export const name = 'dsh-minicpm'
 export const inject = ['llm']
 
-/** Settings namespace this plugin owns. */
-const NS = 'llm-minicpm'
+/**
+ * Settings namespace this plugin owns — the profile entry id its Config lives
+ * under.
+ *
+ * The settings service resolves an entry by `entry.options.id === ns`, so this
+ * must equal the `id:` the profile patch declares for this package. It is read
+ * off the live fiber at runtime (`settingsNs`) and this constant is the fallback
+ * for a host with no entry (the standalone CLI, a bare `apply()` in a test). The
+ * two must stay in step: the bundled `cordis.patch.yml` declares
+ * `id: minicpm`.
+ */
+const NS = 'minicpm'
 /** Loopback route prefix for the browser half. */
 const ROUTE_PREFIX = '/dsh-minicpm'
 
@@ -85,12 +95,40 @@ const fetchSchema = z
   })
   .default({ hfEndpoint: 'https://huggingface.co', build: '' })
 
-/** The resolved `llm-minicpm` settings section. */
+/**
+ * The plugin's Config schema.
+ *
+ * DSH 0.1.7 moved plugin settings to the entry's own Config: the Plugins page
+ * renders a form for exactly the schema nodes marked `.volatile()`, and saving
+ * one writes the new value into the running fiber and emits
+ * `loader/volatile-update` — no plugin reload.
+ *
+ * The engine and fetch knobs are exposed **flat** (`enginePort`, `engineHost`, …)
+ * rather than only nested: a Plugins-page form addresses a field by a single key
+ * (`value?.[field]`, `path: [field]`), so `engine.port` would look up a literal
+ * top-level key of that name. The nested `engine` / `fetch` objects remain the
+ * profile-patch spelling and the fallback — see `engineConfig`, which reconciles
+ * the two.
+ */
 export const Config = z.object({
   models: z.array(modelSchema).default(MODEL_CATALOG.map(spec => ({ ...spec, name: spec.name, description: spec.description ?? '' }))),
   engine: engineSchema,
   fetch: fetchSchema,
-  retryPolicy: RetryPolicySchema
+  retryPolicy: RetryPolicySchema,
+  // Flat, form-addressable spellings of the engine settings.
+  engineMode: z.union(['managed', 'external']).default('managed').volatile(),
+  engineBaseURL: z.string().default('').volatile(),
+  engineBinary: z.string().default('').volatile(),
+  engineHost: z.string().default('127.0.0.1').volatile(),
+  enginePort: z.number().step(1).min(1).max(65535).default(8081).volatile(),
+  engineContextSize: z.number().step(1).min(512).default(32768).volatile(),
+  engineGpuLayers: z.number().step(1).min(0).default(999).volatile(),
+  engineThreads: z.number().step(1).min(0).default(0).volatile(),
+  engineIdleUnloadSeconds: z.number().step(1).min(0).default(900).volatile(),
+  enginePreserveReasoning: z.boolean().default(true).volatile(),
+  // Same reasoning for the fetch settings.
+  fetchHfEndpoint: z.string().default('https://huggingface.co').volatile(),
+  fetchBuild: z.string().default('').volatile()
 })
 
 /** The section shape after schema defaulting. */
@@ -110,6 +148,25 @@ interface MiniCPMSettings {
     preserveReasoning?: boolean
   }
   fetch?: { hfEndpoint?: string; build?: string }
+  /**
+   * Flat, form-addressable spellings of the fields above.
+   *
+   * The Plugins page addresses a field by a single key, so what a user edits
+   * there lands here rather than inside the nested objects; `current()`
+   * reconciles the two, the flat one winning.
+   */
+  engineMode?: string
+  engineBaseURL?: string
+  engineBinary?: string
+  engineHost?: string
+  enginePort?: number
+  engineContextSize?: number
+  engineGpuLayers?: number
+  engineThreads?: number
+  engineIdleUnloadSeconds?: number
+  enginePreserveReasoning?: boolean
+  fetchHfEndpoint?: string
+  fetchBuild?: string
   retryPolicy?: unknown
 }
 
@@ -150,6 +207,58 @@ interface StatusPayload {
  */
 export function apply(ctx: any, config: MiniCPMSettings = {}): void {
   let current: () => MiniCPMSettings = () => config
+
+  /**
+   * Read one schema field, resolving a DSH 0.1.7 volatile reference.
+   *
+   * A `.volatile()` field is a stable reference whose `get()` returns the live
+   * value (`JSON.stringify` of it yields `{}`); the Loader rewrites that value in
+   * place when the user saves the Plugins-page form. Non-volatile fields arrive
+   * as plain values, so both shapes are recognised here.
+   */
+  const read = <K extends keyof MiniCPMSettings>(field: K): MiniCPMSettings[K] => {
+    const raw: any = (config as any)?.[field]
+    if (raw !== null && typeof raw === 'object' && typeof raw.get === 'function') {
+      return raw.get() as MiniCPMSettings[K]
+    }
+    return raw as MiniCPMSettings[K]
+  }
+
+  /**
+   * The plugin's live configuration, with volatile fields resolved.
+   *
+   * The flat `engine*` / `fetch*` fields win over the nested objects, because two
+   * editors write two spellings: the profile patch and existing installs use the
+   * nested `engine` / `fetch`; the Plugins-page form can only address a single
+   * top-level key, so it writes the flat ones. Both default identically, so
+   * "which is set" only matters once a user has touched one — and the one they
+   * touched must win.
+   */
+  current = (): MiniCPMSettings => {
+    const nestedEngine = read('engine') ?? {}
+    const nestedFetch = read('fetch') ?? {}
+    return {
+      models: read('models'),
+      retryPolicy: read('retryPolicy'),
+      engine: {
+        mode: read('engineMode') ?? nestedEngine.mode,
+        baseURL: read('engineBaseURL') ?? nestedEngine.baseURL,
+        binary: read('engineBinary') ?? nestedEngine.binary,
+        host: read('engineHost') ?? nestedEngine.host,
+        port: read('enginePort') ?? nestedEngine.port,
+        contextSize: read('engineContextSize') ?? nestedEngine.contextSize,
+        gpuLayers: read('engineGpuLayers') ?? nestedEngine.gpuLayers,
+        threads: read('engineThreads') ?? nestedEngine.threads,
+        idleUnloadSeconds: read('engineIdleUnloadSeconds') ?? nestedEngine.idleUnloadSeconds,
+        extraArgs: nestedEngine.extraArgs,
+        preserveReasoning: read('enginePreserveReasoning') ?? nestedEngine.preserveReasoning
+      },
+      fetch: {
+        hfEndpoint: read('fetchHfEndpoint') ?? nestedFetch.hfEndpoint,
+        build: read('fetchBuild') ?? nestedFetch.build
+      }
+    }
+  }
 
   /** Normalise the settings section into the engine's own shape. */
   const engineConfig = (): EngineConfig => {
@@ -207,11 +316,26 @@ export function apply(ctx: any, config: MiniCPMSettings = {}): void {
   })
 
   const adapterHandle = ctx.llm.registerAdapter([PROVIDER], adapter)
+  /**
+   * The profile entry id this plugin's Config lives under.
+   *
+   * The settings service resolves an entry by `entry.options.id === ns`, and that
+   * id is whatever the profile patch declared (`cordis.patch.yml` →
+   * `id: minicpm`) — not a name this package can fix in advance. So it is read
+   * off the live fiber, exactly as the official `llm-deepseek` adapter does
+   * (`settingsNs: ctx.fiber.entry?.options.id ?? NS`), with the constant kept as
+   * the fallback for a host that has no entry (the standalone CLI, a bare
+   * `apply()` in a test).
+   *
+   * Everything that addresses this plugin's own settings goes through this: a
+   * namespace the profile did not declare makes the service refuse every write.
+   */
+  const settingsNs = (): string => ctx.fiber?.entry?.options?.id ?? NS
   const directoryHandle = ctx.llm.registerConfigurableProviders([
     {
       provider: PROVIDER,
       displayName: PROVIDER_NAME,
-      settingsNs: NS,
+      settingsNs: settingsNs(),
       // An empty path means the whole section is this provider's profile, so the
       // row is configured from the start — a local engine needs no account
       // marker to be meaningful, and the card exists to set it up.
@@ -279,23 +403,29 @@ export function apply(ctx: any, config: MiniCPMSettings = {}): void {
    */
   let engineFingerprint: string | null = null
 
-  ctx.inject(['settings'], (settingsCtx: any) => {
-    settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      setSource: (source: () => MiniCPMSettings) => {
-        current = source
-      },
-      onChange: () => {
-        const next = JSON.stringify(engineConfig())
-        const previous = engineFingerprint
-        engineFingerprint = next
-        // The first notification is the attach; nothing was running under the
-        // previous value, so there is nothing to invalidate.
-        if (previous === null || previous === next) return
-        // A changed port, context size, binary or mode makes the running child
-        // stale; releasing it means the next call starts one that matches.
-        void engine.stop().catch((error: Error) => ctx.logger?.warn?.(`dsh-minicpm: ${error.message}`))
-      }
-    })
+  // ---------------------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------------------
+  // DSH 0.1.7 removed `ctx.settings.installSection` (the whole section API is
+  // gone; `SettingsForms` now only describes the Config of each profile entry).
+  // Plugin preferences are the entry's own volatile Config fields, so there is
+  // no section to install — this plugin only has to notice when the Loader
+  // commits an edited field and re-run the effects that depend on it.
+  //
+  // `loader/volatile-update` is that signal: the Loader rewrites the volatile
+  // reference in place and emits the event, so `current()` already sees the new
+  // value by the time this fires. Nothing reloads.
+  engineFingerprint = JSON.stringify(engineConfig())
+  ctx.on('loader/volatile-update', () => {
+    const next = JSON.stringify(engineConfig())
+    const previous = engineFingerprint
+    engineFingerprint = next
+    // The first notification is the attach; nothing was running under the
+    // previous value, so there is nothing to invalidate.
+    if (previous === null || previous === next) return
+    // A changed port, context size, binary or mode makes the running child
+    // stale; releasing it means the next call starts one that matches.
+    void engine.stop().catch((error: Error) => ctx.logger?.warn?.(`dsh-minicpm: ${error.message}`))
   })
 
   // ---------------------------------------------------------------------------
